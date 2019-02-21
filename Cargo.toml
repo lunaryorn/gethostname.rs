@@ -13,7 +13,7 @@ keywords = ["gethostname", "DNS", "hostname"]
 categories = ["os", "api-bindings"]
 
 [dev-dependencies]
-pretty_assertions = "^0.5"
+pretty_assertions = "^0.6"
 
 [target.'cfg(not(windows))'.dependencies]
 libc = "^0.2"
