@@ -23,14 +23,78 @@ use std::io::Error;
 
 /// Get the standard host name for the current machine.
 ///
-/// Wraps POSIX [gethostname] in a safe interface. The function may `panic!` if
+/// # Platform-specific behavior
+///
+/// **Unix:** Wraps POSIX [gethostname] in a safe interface. The function may `panic!` if
 /// the internal buffer for the hostname is too small, but we use a buffer large
 /// enough to hold the maximum hostname, so we consider any panics from this
 /// function as bug which you should report.
 ///
+/// **Windows:** Returns the DNS host name of the local computer, as returned by
+/// [GetComputerNameExW] with `ComputerNamePhysicalDnsHostname` flag has name
+/// type.  This function may `panic!` if the internal buffer for the hostname is
+/// too small.  Since we try to allocate a buffer large enough to hold the host
+/// name we consider panics a bug which you should report.
+///
 /// [gethostname]: http://pubs.opengroup.org/onlinepubs/9699919799/functions/gethostname.html
-#[cfg(not(windows))]
+/// [GetComputerNameExW]: https://docs.microsoft.com/en-us/windows/desktop/api/sysinfoapi/nf-sysinfoapi-getcomputernameexw
+///
+/// # Panic
+///
+/// If the host name cannot be retrieved this will panic. Normally there is no
+/// reasonable case where this should fail, but it's not impossible.
+///
+/// If you want to have more explicit error handling consider using [`try_gethostname()`].
+///
+/// **Note that you only need [`try_gethostname()`] that if you don't want a
+/// panic even if your software is run on a quite broken/misconfigured
+/// operating system.**
+///
+/// [`try_gethostname()`]: fn.try_gethostname.html
+///
 pub fn gethostname() -> OsString {
+    let error = match try_gethostname() {
+        Ok(hostname) => return hostname,
+        Err(error) => error,
+    };
+
+    #[cfg(not(windows))]
+    {
+        panic!(
+            concat!(
+                "gethostname failed: {}\n",
+                "Please report an issue to <https://github.com/lunaryorn/gethostname.rs/issues>!"
+            ),
+            error
+        );
+    }
+    #[cfg(windows)]
+    {
+        panic!(
+            concat!(
+                "GetComputerNameExW failed to read hostname: {}\n",
+                "Please report this issue to <https://github.com/lunaryorn/gethostname.rs/issues>!"
+            ),
+            error
+        );
+    }
+}
+
+/// Get the standard host name for the current machine.
+///
+/// In difference to [`gethostname()`] this will not fail if the host name can
+/// not be retrieved. In most cases having a panic is fine as this can only
+/// fail in some rare and likely irellevant edge cases.
+///
+/// See [`gethostname()`] for more details about how this works.
+///
+/// **Note that you only need `try_gethostname()` that if you don't want a
+/// panic even if your software is run on a quite broken/misconfigured
+/// operating system.**
+///
+/// [`gethostname()`]: fn.gethostname.html
+#[cfg(not(windows))]
+pub fn try_gethostname() -> Result<OsString, Error> {
     use libc::{c_char, sysconf, _SC_HOST_NAME_MAX};
     use std::os::unix::ffi::OsStringExt;
     // Get the maximum size of host names on this system, and account for the
@@ -39,12 +103,7 @@ pub fn gethostname() -> OsString {
     let mut buffer = vec![0 as u8; (hostname_max as usize) + 1];
     let returncode = unsafe { libc::gethostname(buffer.as_mut_ptr() as *mut c_char, buffer.len()) };
     if returncode != 0 {
-        // There are no reasonable failures, so lets panic
-        panic!(
-            "gethostname failed: {}
-    Please report an issue to <https://github.com/lunaryorn/gethostname.rs/issues>!",
-            Error::last_os_error()
-        );
+        return Err(Error::last_os_error());
     }
     // We explicitly search for the trailing NUL byte and cap at the buffer
     // length: If the buffer's too small (which shouldn't happen since we
@@ -56,20 +115,24 @@ pub fn gethostname() -> OsString {
         .position(|&b| b == 0)
         .unwrap_or_else(|| buffer.len());
     buffer.resize(end, 0);
-    OsString::from_vec(buffer)
+    Ok(OsString::from_vec(buffer))
 }
 
-/// Get the standard hostname for the current machine.
+/// Get the standard host name for the current machine.
 ///
-/// Returns the DNS host name of the local computer, as returned by
-/// [GetComputerNameExW] with `ComputerNamePhysicalDnsHostname` flag has name
-/// type.  This function may `panic!` if the internal buffer for the hostname is
-/// too small.  Since we try to allocate a buffer large enough to hold the host
-/// name we consider panics a bug which you should report.
+/// In difference to [`gethostname()`] this will not fail if the host name can
+/// not be retrieved. In most cases having a panic is fine as this can only
+/// fail in some rare and likely irellevant edge cases.
 ///
-/// [GetComputerNameExW]: https://docs.microsoft.com/en-us/windows/desktop/api/sysinfoapi/nf-sysinfoapi-getcomputernameexw
+/// See [`gethostname()`] for more details about how this works.
+///
+/// **Note that you only need `try_gethostname()` that if you don't want a
+/// panic even if your software is run on a quite broken/misconfigured
+/// operating system.**
+///
+/// [`gethostname()`]: fn.gethostname.html
 #[cfg(windows)]
-pub fn gethostname() -> OsString {
+pub fn try_gethostname() -> Result<OsString, Error> {
     use std::os::windows::ffi::OsStringExt;
     use winapi::ctypes::{c_ulong, wchar_t};
     use winapi::um::sysinfoapi::{ComputerNamePhysicalDnsHostname, GetComputerNameExW};
@@ -96,18 +159,14 @@ pub fn gethostname() -> OsString {
     };
     // GetComputerNameExW returns a non-zero value on success!
     if returncode == 0 {
-        panic!(
-            "GetComputerNameExW failed to read hostname: {}
-Please report this issue to <https://github.com/lunaryorn/gethostname.rs/issues>!",
-            Error::last_os_error()
-        );
+        return Err(Error::last_os_error());
     }
 
     let end = buffer
         .iter()
         .position(|&b| b == 0)
         .unwrap_or_else(|| buffer.len());
-    OsString::from_wide(&buffer[0..end])
+    Ok(OsString::from_wide(&buffer[0..end]))
 }
 
 #[cfg(test)]
